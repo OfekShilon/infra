@@ -5,8 +5,43 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import lib.compiler_id_lookup as module
+import pytest
 import requests
-from lib.compiler_id_lookup import CompilerIdLookup, get_compiler_id_lookup, get_compiler_ids_for_exe
+from lib.compiler_id_lookup import (
+    CompilerIdLookup,
+    get_compiler_id_lookup,
+    get_compiler_ids_for_exe,
+    list_compiler_languages,
+)
+
+
+class TestListCompilerLanguages:
+    """Tests for discovering the languages to load."""
+
+    def test_lists_languages_of_amazon_properties_files(self):
+        """Only Linux production configs count; other environments and directories are skipped."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = [
+            {"name": "ada.amazon.properties", "type": "file"},
+            {"name": "c++.amazon.properties", "type": "file"},
+            {"name": "c++.amazonwin.properties", "type": "file"},
+            {"name": "carbon.amazon.properties", "type": "file"},
+            {"name": "carbon.defaults.properties", "type": "file"},
+            {"name": "README.md", "type": "file"},
+            {"name": "nested.amazon.properties", "type": "dir"},
+        ]
+
+        with patch("lib.compiler_id_lookup.requests.get", return_value=mock_response):
+            assert list_compiler_languages() == ["ada", "c++", "carbon"]
+
+    def test_raises_when_listing_fails(self):
+        """A failed listing must not silently look like a CE with no compilers."""
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = requests.HTTPError("403 rate limit exceeded")
+
+        with patch("lib.compiler_id_lookup.requests.get", return_value=mock_response):
+            with pytest.raises(requests.HTTPError, match="rate limit"):
+                list_compiler_languages()
 
 
 class TestCompilerIdLookup:
@@ -48,6 +83,25 @@ class TestCompilerIdLookup:
             result = lookup.get_all_mappings()
             assert len(result) == 2
             assert "/opt/compiler-explorer/gcc-14.2.0/bin/g++" in result
+
+    def test_load_all_properties_covers_every_listed_language(self):
+        """Exes are mapped for every language the listing returns, not a fixed subset."""
+        properties = {
+            "c++": {"g142": {"exe": "/opt/compiler-explorer/gcc-14.2.0/bin/g++"}, "noexe": {"name": "No exe"}},
+            "carbon": {"carbon-x86-trunk": {"exe": "/opt/compiler-explorer/carbon-trunk/bin/carbon"}},
+        }
+
+        with (
+            patch("lib.compiler_id_lookup.list_compiler_languages", return_value=list(properties)),
+            patch.object(CompilerIdLookup, "_load_properties_for_language", side_effect=properties.get),
+        ):
+            lookup = CompilerIdLookup()
+
+            assert lookup.get_compiler_ids("/opt/compiler-explorer/carbon-trunk/bin/carbon") == {"carbon-x86-trunk"}
+            assert lookup.get_all_mappings() == {
+                "/opt/compiler-explorer/gcc-14.2.0/bin/g++": {"g142"},
+                "/opt/compiler-explorer/carbon-trunk/bin/carbon": {"carbon-x86-trunk"},
+            }
 
     def test_load_properties_for_language_parses_correctly(self):
         """Test that properties file parsing works correctly."""

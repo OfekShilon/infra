@@ -12,36 +12,22 @@ import requests
 
 _LOGGER = logging.getLogger(__name__)
 
-# All languages that have compilers in CE
-COMPILER_LANGUAGES = [
-    "ada",
-    "assembly",
-    "c",
-    "c++",
-    "circle",
-    "circt",
-    "clean",
-    "cpp_for_opencl",
-    "cppx",
-    "cppx_blue",
-    "cppx_gold",
-    "d",
-    "dart",
-    "fortran",
-    "go",
-    "hlsl",
-    "ispc",
-    "javascript",
-    "mlir",
-    "nim",
-    "objc",
-    "objc++",
-    "pony",
-    "racket",
-    "rust",
-    "swift",
-    "zig",
-]
+CE_CONFIG_LISTING_URL = "https://api.github.com/repos/compiler-explorer/compiler-explorer/contents/etc/config?ref=main"
+AMAZON_PROPERTIES_SUFFIX = ".amazon.properties"
+
+
+def list_compiler_languages() -> list[str]:
+    """Languages with a CE production config, i.e. every `etc/config/<language>.amazon.properties` on main.
+
+    Listed rather than hard-coded so that languages added to CE are picked up without a change here.
+    """
+    response = requests.get(CE_CONFIG_LISTING_URL, timeout=30)
+    response.raise_for_status()
+    return sorted(
+        entry["name"].removesuffix(AMAZON_PROPERTIES_SUFFIX)
+        for entry in response.json()
+        if entry["type"] == "file" and entry["name"].endswith(AMAZON_PROPERTIES_SUFFIX)
+    )
 
 
 class CompilerIdLookup:
@@ -59,10 +45,10 @@ class CompilerIdLookup:
         try:
             request = requests.get(url, timeout=30)
             if not request.ok:
-                _LOGGER.debug("Could not fetch properties for %s: %s", language, request.status_code)
+                _LOGGER.warning("Could not fetch properties for %s: %s", language, request.status_code)
                 return {}
         except requests.RequestException as e:
-            _LOGGER.debug("Error fetching properties for %s: %s", language, e)
+            _LOGGER.warning("Error fetching properties for %s: %s", language, e)
             return {}
 
         compilers: dict[str, dict[str, Any]] = defaultdict(dict)
@@ -84,7 +70,7 @@ class CompilerIdLookup:
             return
 
         _LOGGER.debug("Loading compiler properties from CE repository...")
-        for language in COMPILER_LANGUAGES:
+        for language in list_compiler_languages():
             compilers = self._load_properties_for_language(language)
             for compiler_id, props in compilers.items():
                 if "exe" in props:
